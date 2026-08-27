@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>e-かんばん×管理カード照合</title>
+    <!-- QRコード読み取り用ライブラリ -->
+    <script src="https://unpkg.com/html5-qrcode"></script>
+    <style>
+      body { font-family: sans-serif; padding: 15px; text-align: center; background-color: #f4f4f9; }
+      .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); max-width: 400px; margin: auto; }
+      .logo-img { max-width: 240px; height: auto; margin-bottom: 10px; }
+      .btn-scan-live { font-size: 18px; font-weight: bold; padding: 15px; background-color: #4CAF50; color: white; border: none; border-radius: 6px; cursor: pointer; width: 100%; box-sizing: border-box; margin: 10px 0; }
+      .btn-scan-photo { font-size: 18px; font-weight: bold; padding: 15px; background-color: #ff9800; color: white; border: none; border-radius: 6px; cursor: pointer; width: 100%; box-sizing: border-box; margin: 10px 0; }
+      .btn-stop { font-size: 16px; font-weight: bold; padding: 15px; background-color: #757575; color: white; border: none; border-radius: 6px; cursor: pointer; width: 100%; box-sizing: border-box; margin: 10px 0; display: none; }
+      .input-group { display: flex; align-items: center; justify-content: space-between; margin: 10px 0; }
+      .input-group label { width: 35%; text-align: left; font-weight: bold; font-size: 14px; }
+      input[type="text"] { font-size: 16px; padding: 8px; width: 60%; border: 2px solid #ccc; border-radius: 4px; background-color: #f9f9f9; }
+      .action-buttons { margin-top: 15px; }
+      button { font-size: 16px; padding: 12px; margin: 5px 0; cursor: pointer; border: none; border-radius: 4px; color: white; }
+      .btn-clear { background-color: #757575; width: 100%; box-sizing: border-box; }
+      #result { font-size: 18px; font-weight: bold; margin-top: 15px; padding: 10px; border-radius: 4px; }
+      .ok { color: white; background-color: #4CAF50; }
+      .ng { color: white; background-color: #F44336; animation: blink 0.5s infinite alternate; }
+
+      #overlay-result {
+        display: none; position: fixed; top: 25%; left: 5%; width: 90%; height: 50%;
+        z-index: 9999; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+        color: white; font-weight: bold; flex-direction: column; justify-content: center;
+        align-items: center; text-align: center; padding: 20px; box-sizing: border-box;
+      }
+      #overlay-result .main-text { font-size: 90px; line-height: 1; margin-bottom: 20px; }
+      #overlay-result .sub-text { font-size: 26px; }
+      .overlay-ok { background-color: #4CAF50; }
+      .overlay-ng { background-color: #F44336; animation: alert-blink 0.3s infinite alternate; }
+      @keyframes alert-blink { from { opacity: 1; transform: scale(1); } to { opacity: 0.8; transform: scale(0.97); } }
+      #reader { width: 100%; margin: 15px 0; border-radius: 8px; overflow: hidden; display: none; border: 2px solid #ccc;} 
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <img src="https://lh3.googleusercontent.com/d/1gytqFmZ7RC8n_D2wKdGrghlVSTKxsPgK" class="logo-img" alt="ウチダ株式会社">
+      <h2 style="margin: 5px 0 15px 0; font-size: 20px;">e-かんばん×管理カード照合</h2>
+
+      <div class="input-group">
+        <label>作業者名:</label>
+        <input type="text" id="workerName" placeholder="氏名を入力">
+      </div>
+      
+      <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none" onchange="handleImage(event)">
+
+      <button id="btn-live" class="btn-scan-live" onclick="startLiveScanner()">🎥 かざして自動スキャン</button>
+      <button id="btn-stop" class="btn-stop" onclick="stopScanner()">停止</button>
+      <button id="btn-photo" class="btn-scan-photo" onclick="startPhotoScanner()">📷 写真を撮って一括解析</button>
+
+      <div id="reader"></div>
+
+      <div class="input-group">
+        <label>e-かんばん:</label>
+        <input type="text" id="target" readonly placeholder="待機中...">
+      </div>
+      <div class="input-group">
+        <label>管理カード:</label>
+        <input type="text" id="scanned" readonly placeholder="待機中...">
+      </div>
+
+      <div class="action-buttons">
+        <button class="btn-clear" onclick="clearInputs()">クリア</button>
+      </div>
+      <div id="result"></div>
+    </div>
+
+    <div id="overlay-result">
+      <div class="main-text" id="overlay-main"></div>
+      <div class="sub-text" id="overlay-sub"></div>
+    </div>
+
+    <script>
+      // ★★★ここにステップ2で取得したGASのURLを貼り付けます★★★
+     https://script.google.com/macros/s/AKfycbyVIH-XM0VW0oIk9DSp24njAHWJeDyBX_XG7-2YKQ0huv32vAE4XaqbR4qct1x3yFRxkQ/exec
+      // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+      let html5QrCode = null;
+      let isScanning = false;
+      let rawTargetQrData = '';
+      let foundTarget = '';
+      let foundScanned = '';
+
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const okAudio = new Audio('https://sounddictionary.info/life-1/mp3/quiz-correct1.mp3');
+
+      function playOkSound() {
+        okAudio.currentTime = 0;
+        okAudio.play().catch(e => console.log(e));
+      }
+
+      function playNgSound() {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        for (let i = 0; i < 3; i++) {
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(150, audioCtx.currentTime + i * 0.2);
+          gain.gain.setValueAtTime(0.5, audioCtx.currentTime + i * 0.2);
+          osc.start(audioCtx.currentTime + i * 0.2);
+          osc.stop(audioCtx.currentTime + i * 0.2 + 0.15);
+        }
+      }
+
+      function startLiveScanner() {
+        if (isScanning) return;
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        okAudio.play().then(() => { okAudio.pause(); okAudio.currentTime = 0; }).catch(() => {});
+        clearInputs(false);
+        const resultDiv = document.getElementById('result');
+        resultDiv.textContent = "カメラ起動中...";
+
+        if (!html5QrCode) html5QrCode = new Html5Qrcode("reader");
+
+        html5QrCode.start(
+          { facingMode: "environment" }, { fps: 10 },
+          (decodedText) => {
+            const cleanText = decodedText.trim();
+            if (cleanText.length >= 74 && !foundTarget) {
+              rawTargetQrData = cleanText;
+              foundTarget = cleanText.substring(64, 74);
+              document.getElementById('target').value = foundTarget;
+            } else if (cleanText.length < 74 && !foundScanned) {
+              foundScanned = cleanText;
+              document.getElementById('scanned').value = foundScanned;
+            }
+            if (foundTarget && foundScanned) stopAndVerify();
+          },
+          (errorMessage) => { }
+        ).then(() => {
+          isScanning = true;
+          document.getElementById('btn-live').style.display = 'none';
+          document.getElementById('btn-photo').style.display = 'none';
+          document.getElementById('btn-stop').style.display = 'inline-block';
+          document.getElementById('reader').style.display = 'block';
+          resultDiv.textContent = "かんばんにカメラを向けてください";
+        }).catch((err) => {
+          resultDiv.textContent = "カメラがブロックされました。";
+          resultDiv.className = "ng";
+        });
+      }
+
+      function stopAndVerify() {
+        if (isScanning && html5QrCode) {
+          html5QrCode.stop().then(() => {
+            isScanning = false;
+            resetButtons();
+            verify(foundTarget, foundScanned);
+          });
+        }
+      }
+
+      function stopScanner() {
+        if (isScanning && html5QrCode) {
+          html5QrCode.stop().then(() => {
+            isScanning = false;
+            resetButtons();
+            document.getElementById('result').textContent = "スキャンをキャンセルしました";
+          });
+        }
+      }
+
+      function resetButtons() {
+        document.getElementById('btn-live').style.display = 'inline-block';
+        document.getElementById('btn-photo').style.display = 'inline-block';
+        document.getElementById('btn-stop').style.display = 'none';
+        document.getElementById('reader').style.display = 'none';
+      }
+
+      // 予備の写真機能（省略なし・完全版）
+      function startPhotoScanner() {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        okAudio.play().then(() => { okAudio.pause(); okAudio.currentTime = 0; }).catch(() => {});
+        document.getElementById('cameraInput').value = ''; 
+        document.getElementById('cameraInput').click();
+      }
+
+      function loadImage(file) {
+        return new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = reject;
+          img.src = URL.createObjectURL(file);
+        });
+      }
+
+      function cropImage(img, sx, sy, sw, sh, fileName) {
+        return new Promise((resolve) => {
+          const canvas = document.createElement('canvas');
+          canvas.width = sw; canvas.height = sh;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+          canvas.toBlob((blob) => resolve(new File([blob], fileName, { type: 'image/jpeg' })), 'image/jpeg', 0.95);
+        });
+      }
+
+      async function handleImage(event) {
+        if (event.target.files.length === 0) return;
+        clearInputs(false);
+        const resultDiv = document.getElementById('result');
+        resultDiv.textContent = "解析中...";
+        try {
+          const img = await loadImage(event.target.files[0]);
+          const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+          const newW = img.width * scale; const newH = img.height * scale;
+          const baseCanvas = document.createElement('canvas');
+          baseCanvas.width = newW; baseCanvas.height = newH;
+          baseCanvas.getContext('2d').drawImage(img, 0, 0, newW, newH);
+          const scaledImg = new Image();
+          scaledImg.src = baseCanvas.toDataURL('image/jpeg');
+          await new Promise(r => scaledImg.onload = r);
+
+          if (!html5QrCode) html5QrCode = new Html5Qrcode("reader");
+          let uniqueCodes = new Set();
+          const scanAndAdd = async (sx, sy, sw, sh, name) => {
+            if (uniqueCodes.size >= 2) return; 
+            try {
+              const res = await html5QrCode.scanFile(await cropImage(scaledImg, sx, sy, sw, sh, name), true);
+              uniqueCodes.add(res.trim());
+            } catch(e) {}
+          };
+
+          const regions = [
+            {sx:0, sy:0, sw:newW, sh:newH}, {sx:0, sy:0, sw:newW, sh:newH*0.6},
+            {sx:0, sy:newH*0.4, sw:newW, sh:newH*0.6}, {sx:0, sy:0, sw:newW*0.6, sh:newH},
+            {sx:newW*0.4, sy:0, sw:newW*0.6, sh:newH}
+          ];
+          for (let r of regions) { if(uniqueCodes.size >= 2) break; await scanAndAdd(r.sx, r.sy, r.sw, r.sh, 'p.jpg'); }
+
+          Array.from(uniqueCodes).forEach(t => {
+            if (t.length >= 74) { rawTargetQrData = t; foundTarget = t.substring(64, 74); } 
+            else { foundScanned = t; }
+          });
+
+          if (!foundTarget || !foundScanned) {
+            alert("⚠️ 読取エラー ⚠️\n両方のQRコードが認識できませんでした。"); return;
+          }
+          document.getElementById('target').value = foundTarget;
+          document.getElementById('scanned').value = foundScanned;
+          verify(foundTarget, foundScanned);
+        } catch (e) { resultDiv.textContent = "エラー"; }
+      }
+
+      function verify(target, scanned) {
+        const resultDiv = document.getElementById('result');
+        const overlayResult = document.getElementById('overlay-result');
+        const isMatch = (target === scanned);
+        const workerName = document.getElementById('workerName').value || "未入力";
+
+        if (isMatch) {
+          document.getElementById('overlay-main').textContent = "OK";
+          document.getElementById('overlay-sub').textContent = "品番: " + scanned;
+          overlayResult.className = "overlay-ok";
+          overlayResult.style.display = "flex";
+          playOkSound(); 
+          setTimeout(() => clearInputs(false), 2500);
+        } else {
+          document.getElementById('overlay-main').textContent = "NG";
+          document.getElementById('overlay-sub').textContent = "不一致！確認してください";
+          overlayResult.className = "overlay-ng";
+          overlayResult.style.display = "flex";
+          playNgSound(); 
+          if ("vibrate" in navigator) navigator.vibrate([200, 100, 200, 100, 400]);
+          setTimeout(() => {
+            alert("⚠️ 照合NG ⚠️\n「e-かんばん」と「管理カード」が一致していません！");
+            overlayResult.style.display = "none";
+          }, 100);
+        }
+
+        // GASへデータを送信（保存）
+        fetch(GAS_WEB_APP_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify({
+            rawTarget: rawTargetQrData,
+            target: target,
+            scanned: scanned,
+            isMatch: isMatch,
+            worker: workerName
+          })
+        }).catch(e => console.error("記録エラー"));
+      }
+
+      function clearInputs(clearWorker = true) {
+        document.getElementById('target').value = '';
+        document.getElementById('scanned').value = '';
+        document.getElementById('result').textContent = '';
+        document.getElementById('result').className = '';
+        document.getElementById('overlay-result').style.display = 'none';
+        if(clearWorker) document.getElementById('workerName').value = '';
+        rawTargetQrData = ''; foundTarget = ''; foundScanned = '';
+      }
+    </script>
+  </body>
+</html>
